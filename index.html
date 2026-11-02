@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Dip In</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="A live-match companion for cricket fans who can't watch every ball.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anybody:wdth,wght@50..150,500..900&family=Hanken+Grotesk:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="hero">
+  <div class="hero-inner">
+    <header class="top">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"><svg viewBox="0 0 32 32"><circle class="mk-ball" cx="16" cy="11" r="6"/><path class="mk-wave" d="M3 23c4.5 0 4.5-5 9-5s4.5 5 9 5 4.5-5 8-5"/></svg></span>
+        <div>
+          <div class="brand-name">Dip In</div>
+          <div class="brand-sub">For fans who can't watch every ball</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="ai-chip" id="ai-chip" data-state="checking">Checking AI</span>
+        <button class="icon-btn" type="button" data-action="open-settings" aria-label="Alert and language settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="match-meta">
+      <span id="match-title">Tides v Falcons · T20 · Riverside Ground, Nashik</span>
+      <button type="button" class="sim-pill" id="sim-pill" data-action="open-settings" aria-label="Change match"><span id="sim-pill-text">Simulated match</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></svg></button>
+    </div>
+    <section class="meter" id="meter" aria-label="Should I watch?"></section>
+  </div>
+</div>
+
+<div class="app">
+  <main>
+    <section id="welcome"></section>
+    <section class="match" aria-label="Scoreboard">
+      <div class="board" id="board"></div>
+      <div class="winbar" id="winbar" aria-label="Win chance"></div>
+    </section>
+    <section id="actions" class="actions"></section>
+    <section id="catchup" aria-live="polite"></section>
+    <section class="card" id="chart" aria-label="How the match has moved"></section>
+    <section class="card" id="alerts" aria-label="Alerts"></section>
+    <section class="card" id="feed" aria-label="Ball by ball"></section>
+  </main>
+</div>
+
+<nav class="demo-bar" aria-label="Demo controls">
+  <div class="demo-inner">
+    <span class="demo-label">Demo<span id="demo-clock"></span></span>
+    <button type="button" class="demo-btn" data-action="toggle-play" id="play-btn" aria-label="Pause the match">Pause</button>
+    <div class="seg" role="group" aria-label="Match speed">
+      <button type="button" data-action="speed" data-speed="1" aria-pressed="true">1×</button>
+      <button type="button" data-action="speed" data-speed="4" aria-pressed="false">4×</button>
+      <button type="button" data-action="speed" data-speed="16" aria-pressed="false">16×</button>
+    </div>
+    <button type="button" class="demo-btn" data-action="restart">Restart</button>
+  </div>
+</nav>
+
+<div class="lock" id="lock" hidden>
+  <div class="lock-inner">
+    <div class="lock-time" id="lock-clock"></div>
+    <p class="lock-status" id="lock-status"></p>
+    <div class="notes" id="lock-notes" aria-live="polite"></div>
+    <div class="lock-foot" id="lock-foot"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<div class="sheet-scrim" id="scrim" data-action="close-sheets" hidden></div>
+
+<section class="sheet" id="sheet-ask" role="dialog" aria-modal="true" aria-labelledby="ask-title" hidden>
+  <div class="sheet-head">
+    <h2 id="ask-title">Ask about the match</h2>
+    <button type="button" class="icon-btn" data-action="close-sheets" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="chat" id="chat"></div>
+  <div class="chips" id="ask-chips"></div>
+  <form class="ask-form" id="ask-form">
+    <label class="sr-only" for="ask-input">Your question</label>
+    <input id="ask-input" name="q" type="text" autocomplete="off" maxlength="200" placeholder="Is 175 a good score here?">
+    <button type="submit" class="btn btn-primary" id="ask-send">Ask</button>
+  </form>
+  <p class="fine">Answers use only this match's live data.</p>
+</section>
+
+<section class="sheet" id="sheet-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <div class="sheet-head">
+    <h2 id="settings-title">Your settings</h2>
+    <button type="button" class="icon-btn" data-action="close-sheets" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="settings" id="settings"></div>
+</section>
+
+<script src="engine.js"></script>
+<script src="adapters/cricsheet.js"></script>
+<script src="data/replays.js"></script>
+<script src="ai.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
