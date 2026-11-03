@@ -23,3 +23,4 @@ const body = html.match(/<body>([\s\S]*)<\/body>/)[1];
 fs.writeFileSync(path.join(out, 'dipin.html'), `${head.trim()}\n${body.trim()}\n`);
 
 console.log(`dist/index.html ${(html.length / 1024).toFixed(1)} KB, dist/dipin.html written`);
+
