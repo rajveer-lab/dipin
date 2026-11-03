@@ -6,15 +6,16 @@ const fs = require('fs');
 const path = require('path');
 const E = require('../engine.js');
 const Cs = require('../adapters/cricsheet.js');
+const LEVELS = require('../data/levels.js');
 
 const dir = path.join(__dirname, '..', 'data', 'cricsheet');
 const NOT_BOWLER = new Set(['run out', 'retired hurt', 'retired out', 'retired not out', 'obstructing the field', 'timed out', 'handled the ball']);
 
 for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.json'))) {
   const cs = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-  const feed = Cs.toFeed(cs, { id: path.basename(file, '.json') });
+  const feed = Cs.toFeed(cs, { id: path.basename(file, '.json'), levels: LEVELS });
   const m = E.createMatch(feed.info);
-  for (const b of feed.balls) E.addBall(m, b);
+  for (const item of feed.items) E.push(m, item);
   const problems = [];
   const expect = (what, want, got) => { if (want !== got) problems.push(`${what}: Cricsheet ${want}, Dip In ${got}`); };
 
@@ -60,8 +61,8 @@ for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.json'))) {
     if (n.inn === d.inn && (d.next.s !== n.striker || d.next.ns !== n.nonStriker)) problems.push(`crease after ${d.label}: ${JSON.stringify(d.next)}`);
   }
   const out = cs.info.outcome || {};
-  const winner = out.winner ? Cs.initials(out.winner) : null;
-  expect('winner', winner, m.result && m.result.winner);
+  const winnerId = m.result && m.result.winner;
+  expect('winner', out.winner || null, winnerId ? m.info.teams[winnerId].name : null);
   if (out.by && out.by.runs) expect('margin', `${out.by.runs} run${out.by.runs === 1 ? '' : 's'}`, m.result.margin);
   if (out.by && out.by.wickets) expect('margin', `${out.by.wickets} wicket${out.by.wickets === 1 ? '' : 's'}`, m.result.margin);
 
