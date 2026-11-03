@@ -8,6 +8,8 @@ const path = require('path');
 const MATCHES = {
   // scoring: IPL 2019 average first-innings total, from Cricsheet (tools/calibrate.js prints it)
   1181768: { label: 'IPL 2019 Final: MI v CSK', event: 'IPL 2019 Final', start: 19 * 60 + 30, scoring: 168 },
+  // No scoring given: the app looks it up in data/levels.js (T20Is between full members).
+  1415755: { label: 'T20 World Cup 2024 Final: IND v SA', event: "Men's T20 World Cup 2024 Final", start: 10 * 60 + 30 },
 };
 
 const dir = path.join(__dirname, '..', 'data', 'cricsheet');
