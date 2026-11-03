@@ -9,17 +9,18 @@
   const $ = (id) => document.getElementById(id);
 
   // Matches the app can play. Real ones come from Cricsheet files and go
-  // through the same path a live feed would: E.createMatch, then E.addBall
-  // for every ball.
+  // through the same path a live feed would: E.createMatch, then E.push for
+  // every ball and scoreboard message. data/levels.js tells the win model how
+  // high that competition scores.
   function fromFeed(feed) {
     const m = E.createMatch(feed.info);
-    for (const ball of feed.balls) E.addBall(m, ball);
+    for (const item of feed.items || feed.balls) E.push(m, item);
     return m;
   }
   const MATCHES = [{ key: 'demo', label: 'Demo match', hint: 'Made up, with a close finish', make: () => E.simulateMatch(E.SEED) }]
     .concat(Cs ? (window.DIPIN_REPLAYS || []).map((r) => ({
       key: `cs-${r.id}`, label: r.label, hint: 'Real match, replayed ball by ball',
-      make: () => fromFeed(Cs.toFeed(r.cricsheet, r.options)),
+      make: () => fromFeed(Cs.toFeed(r.cricsheet, Object.assign({ levels: window.DIPIN_LEVELS }, r.options))),
     })) : []);
   let M, INFO, B, LAST, FIRST, OPEN_FROM, OPEN_AT;
   let BAT1, BAT2;  // team batting first, team chasing
@@ -422,8 +423,8 @@
         <button class="btn${S.pending ? '' : ' btn-primary'}" type="button" data-action="step-away"${over ? ' disabled' : ''}>${ICON.away}Step away</button>
         <button class="btn" type="button" data-action="open-ask">${ICON.ask}Ask</button>
       </div>`;
-    if (!S.pending && !S.catchUp) {
-      html += '<p class="fine">Step away and Dip In keeps watching. It pings you only for the moments you choose, then catches you up when you\'re back.</p>';
+    if (!over) {
+      html += '<p class="fine"><b>Step away</b> when you put your phone down. Dip In keeps following the match and pings you only when it\'s worth coming back (you pick the moments in Settings), then tells you what you missed. In this demo, match time runs fast while you\'re away.</p>';
     }
     setHtml('actions', html);
   }
