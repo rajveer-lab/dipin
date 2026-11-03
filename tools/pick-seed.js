@@ -25,3 +25,4 @@ for (let seed = 1; seed <= count; seed++) {
 }
 rows.sort((a, b) => b.score - a.score);
 console.table(rows.slice(0, 15));
+
