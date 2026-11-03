@@ -46,3 +46,4 @@ for (const [k, g] of Object.entries(groups)) {
   console.log(`${k.padEnd(10)} ${String(g.length).padStart(4)} matches: pinged ${(100 * hit.length / g.length).toFixed(0).padStart(3)}%, ` +
     `${(g.reduce((a, x) => a + x.pings.length, 0) / g.length).toFixed(2)} pings each, first ping a median ${med} balls before the end`);
 }
+
