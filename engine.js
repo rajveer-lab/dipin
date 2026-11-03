@@ -22,7 +22,10 @@
        batFirst   id of the team batting first
        venue, par (typical first-innings score here), dateLabel,
        start      minutes after midnight of the first ball, e.g. 19 * 60 + 30
-       overs      20 (only T20 is modelled)
+       overs      overs per side, 20 unless the match was cut short before it began
+       scoring    typical first-innings total in this competition, for the win model
+       chaseEdge  how much easier (+) or harder (-) chasing is in this
+                  competition than the model expects, as a shift in log-odds
        simulated  true for the made-up demo match
 
      addBall(match, ball), for every delivery in order, wides and no-balls included:
@@ -34,14 +37,27 @@
        extra      null, 'wd', 'nb', 'b' or 'lb'
        wicket     null or { kind, out, fielder?, how? }
                   kind: caught, bowled, lbw, stumped, runout, hitwicket, retired, other
+       alsoOut    [{ kind, out, how? }] for a rare second dismissal on the same
+                  ball, such as a batter retired out (optional)
        t          minutes since the first ball (optional, estimated if missing)
        text       commentary line (optional, a plain one is written if missing)
        next       { s, ns }: who is on strike and at the other end after this
                   ball (optional; worked out from the runs, and corrected when
                   the next ball arrives)
+       penalty    penalty runs awarded to the batting side with this ball (optional)
+
+     push(match, item) takes the same balls, plus the two things a scoreboard
+     says that no ball does:
+       { status: 'limit', inn, overs?, target? }   rain: innings `inn` now has
+                  `overs` overs and, for the chase, a revised target
+       { status: 'end', result? }   the match is over: no result, a DLS or
+                  super-over result, an abandoned or awarded match.
+                  result is { winner: team id or null, margin?, text }
 
      The engine works out everything else: score, overs, labels, free hits,
-     when an innings or the match ends, win chance, tension and alerts. */
+     when an innings or the match ends, win chance, tension and alerts. An
+     innings it closed at the end of its overs opens again if the umpires
+     miscounted and one more ball arrives. */
 
   const BALLS = 120;  // T20
 
@@ -63,6 +79,13 @@
   };
   const LEVEL = 196; // IPL 2026 average first-innings total, for feeds that give no level
   const levelOf = (match) => match.info.scoring || match.info.par || LEVEL;
+  /* The same model scores other competitions well once it knows their level
+     (tools/accuracy.js: 11,000 matches in 18 competitions, chances off by 2.3
+     points on average). What is left is mostly how hard chasing is there:
+     chasers in lower-scoring women's cricket win less often than the runs
+     suggest, chasers in the PSL more often. data/levels.js carries that edge
+     per competition, learnt from past seasons; with it, 0.9 points. */
+  const edgeOf = (match) => match.info.chaseEdge || 0;
 
   function share(b, wih) {
     if (b <= 0 || wih <= 0) return 0;
@@ -83,28 +106,37 @@
   }
   const expRuns = (b, wih, L) => MODEL.L0 * share(b, wih) * levelScale(b, L);
   const sdRuns = (b, wih, L) => MODEL.L0 * MODEL.S[0] * Math.pow(share(b, wih), MODEL.S[1]) * levelScale(b, L);
-  function calibrated(beta, z, b) {
+  function calibrated(beta, z, b, edge = 0) {
     const t = 1 - b / BALLS;
-    return 1 / (1 + Math.exp(-(beta[0] + beta[1] * z + beta[2] * t + beta[3] * z * t)));
+    return 1 / (1 + Math.exp(-(beta[0] + beta[1] * z + beta[2] * t + beta[3] * z * t + edge)));
   }
 
   // Chance the chasing side scores `need` more runs from `b` balls with `wih` wickets left.
-  function chaseChance(need, b, wih, L) {
+  function chaseChance(need, b, wih, L, edge = 0) {
     if (need <= 0) return 1;
     if (b <= 0 || wih <= 0) return 0;
-    return calibrated(MODEL.CHASE, (expRuns(b, wih, L) - need + 0.5) / sdRuns(b, wih, L), b);
+    return calibrated(MODEL.CHASE, (expRuns(b, wih, L) - need + 0.5) / sdRuns(b, wih, L), b, edge);
   }
   // Same question asked during the first innings, using the projected total.
-  function firstInningsChase(total, b, wih, L) {
-    if (b <= 0 || wih <= 0) return chaseChance(total + 1, BALLS, 10, L);
+  // `chase` is how many balls the chase will have. The chasing edge is left
+  // out here: tested, it made first-innings chances worse, not better.
+  function firstInningsChase(total, b, wih, L, chase = BALLS, edge = 0) {
+    if (b <= 0 || wih <= 0) return chaseChance(total + 1, chase, 10, L, edge);
     const proj = total + expRuns(b, wih, L);
-    const z = (expRuns(BALLS, 10, L) - proj - 0.5) / Math.sqrt(sdRuns(BALLS, 10, L) ** 2 + sdRuns(b, wih, L) ** 2);
+    const z = (expRuns(chase, 10, L) - proj - 0.5) / Math.sqrt(sdRuns(chase, 10, L) ** 2 + sdRuns(b, wih, L) ** 2);
     return calibrated(MODEL.FIRST, z, b);
   }
-  function chaseWinChance(inn, total, wkts, legal, target, level) {
+  // `limits` is the length of each innings in balls, shorter after rain.
+  function chaseWinChance(inn, total, wkts, legal, target, level, limits = [BALLS, BALLS], edge = 0) {
     const L = level || LEVEL;
-    if (inn === 1) return firstInningsChase(total, BALLS - legal, 10 - wkts, L);
-    return chaseChance(target - total, BALLS - legal, 10 - wkts, L);
+    if (inn === 1) return firstInningsChase(total, limits[0] - legal, 10 - wkts, L, limits[1], edge);
+    return chaseChance(target - total, limits[1] - legal, 10 - wkts, L, edge);
+  }
+  const limitsOf = (match) => [match.innings[0].maxBalls, match.innings[1].maxBalls];
+  // "18" or "7.4" overs, as scoreboards write them, to balls.
+  function ballsOf(overs) {
+    const [o, b] = String(overs).split('.');
+    return Number(o) * 6 + Number(b || 0);
   }
 
   // ---------- scorecards: rebuilt ball by ball ----------
@@ -153,12 +185,16 @@
     ov.balls.push(symbol(d));
     if (d.wicket) ov.wkts++;
     if (ov.balls.filter((s) => !s.startsWith('Wd') && !s.startsWith('Nb')).length === 6 && ov.runs === 0) bw.maidens++;
-    I.partnership.runs += d.runs + d.extras;
+    I.partnership.runs += d.runs + d.extras; // penalty runs go to the team, not the partnership
     if (d.legal) I.partnership.balls++;
     if (d.wicket) {
       batEntry(I, d.wicket.out).out = d.wicket.how;
       I.fow.push({ wkt: d.wkts, score: d.total, label: d.label, pid: d.wicket.out, idx: st.idx });
       I.partnership = { runs: 0, balls: 0 };
+    }
+    for (const x of d.alsoOut || []) {
+      batEntry(I, x.out).out = x.how;
+      I.fow.push({ wkt: d.wkts, score: d.total, label: d.label, pid: x.out, idx: st.idx });
     }
     I.total = d.total; I.wkts = d.wkts; I.legal = d.legalBalls;
     I.next = d.next; I.lastBowler = d.bowler;
@@ -198,7 +234,8 @@
     const d = match.balls[st.idx];
     const I = st.innings[d.inn - 1];
     const inningsOver = st.idx === match.innings[d.inn - 1].endIdx;
-    const matchOver = !!match.result && st.idx === match.innings[1].endIdx;
+    const matchOver = !!match.result && st.idx === match.balls.length - 1;
+    const [max1, max2] = limitsOf(match);
     const s = {
       idx: st.idx, inn: d.inn, label: d.label, time: clockLabel(d.t, match.info.start), t: d.t,
       batTeam: I.batTeam, bowlTeam: I.bowlTeam,
@@ -213,11 +250,14 @@
     if (d.inn === 2) {
       s.target = match.target;
       s.need = Math.max(0, match.target - I.total);
-      s.ballsLeft = BALLS - I.legal;
+      s.ballsLeft = Math.max(0, max2 - I.legal);
       s.rrr = s.ballsLeft ? +(s.need / (s.ballsLeft / 6)).toFixed(2) : null;
     } else {
-      s.projected = Math.round(I.total + expRuns(BALLS - I.legal, 10 - I.wkts, levelOf(match)));
+      s.projected = Math.round(I.total + expRuns(max1 - I.legal, 10 - I.wkts, levelOf(match)));
+      // A target that is not simply runs + 1, or a chase cut short by rain.
+      if (inningsOver && match.target && (match.target !== I.total + 1 || max2 !== BALLS)) s.revised = { target: match.target, overs: max2 / 6 };
     }
+    if (max1 !== BALLS || max2 !== BALLS) s.maxOvers = (d.inn === 1 ? max1 : max2) / 6;
     const crease = inningsOver ? [] : [I.next && I.next.s, I.next && I.next.ns].filter(Boolean);
     s.batters = crease.map((pid, i) => {
       const b = I.bat[pid] || { runs: 0, balls: 0, fours: 0, sixes: 0 };
@@ -227,8 +267,9 @@
     s.bowler = { name: P[I.lastBowler].name, short: P[I.lastBowler].short, figures: figures(bw) };
     const curOver = I.overs[d.over];
     s.thisOver = curOver ? curOver.balls.slice() : [];
-    // Anyone listed as a bowler, plus anyone who has actually bowled.
-    const quota = BALLS / 30;
+    // Anyone listed as a bowler, plus anyone who has actually bowled. Each may
+    // bowl a fifth of the overs.
+    const quota = Math.ceil((d.inn === 1 ? max1 : max2) / 30);
     s.bowlersLeft = T[I.bowlTeam].players.map((p) => P[p.id]).filter((p) => p.bowl || I.bowl[p.id]).map((p) => {
       const e = I.bowl[p.id];
       const oversLeft = Math.max(0, quota - Math.ceil((e ? e.balls : 0) / 6));
@@ -257,14 +298,17 @@
 
   // ---------- tension & alerts ----------
   const TENSE = 70;
-  function tensionOf(inn, total, wkts, legal, target, recentWicket, L) {
-    const wp = chaseWinChance(inn, total, wkts, legal, target, L);
-    if (inn === 2 && (total >= target || wkts >= 10 || legal >= BALLS)) return { wp, tension: 0 };
+  function tensionOf(inn, total, wkts, legal, target, recentWicket, L, limits = [BALLS, BALLS], edge = 0) {
+    const wp = chaseWinChance(inn, total, wkts, legal, target, L, limits, edge);
+    const max = limits[inn - 1];
+    if (inn === 2 && (total >= target || wkts >= 10 || legal >= max)) return { wp, tension: 0 };
     const closeness = 1 - Math.abs(wp - 0.5) * 2;
-    const progress = legal / BALLS;
+    // How far through the innings, counted back from its end, so the last
+    // overs of a chase cut short by rain feel as late as in a full one.
+    const progress = Math.max(0, 1 - (max - legal) / BALLS);
     const stage = inn === 1 ? 0.25 + 0.35 * progress : 0.4 + 0.6 * progress;
-    const six = chaseWinChance(inn, total + 6, wkts, legal + 1, target, L);
-    const out = chaseWinChance(inn, total, Math.min(10, wkts + 1), legal + 1, target, L);
+    const six = chaseWinChance(inn, total + 6, wkts, legal + 1, target, L, limits, edge);
+    const out = chaseWinChance(inn, total, Math.min(10, wkts + 1), legal + 1, target, L, limits, edge);
     const lev = Math.min(1, Math.abs(six - out) / 0.2);
     let tension = 100 * (0.5 * closeness * stage + 0.5 * lev * (0.4 + 0.6 * closeness) * stage);
     if (recentWicket) tension += 6;
@@ -301,7 +345,10 @@
   function tensionReason(s) {
     const n = s.names;
     if (s.matchOver) return s.result + '.';
-    if (s.inn === 1 && s.inningsOver) return `Innings break. ${n.chase} need ${s.total + 1} at ${((s.total + 1) / 20).toFixed(2)} an over.`;
+    if (s.inn === 1 && s.inningsOver) {
+      const r = s.revised || { target: s.total + 1, overs: 20 };
+      return `Innings break. ${n.chase} need ${r.target}${r.overs !== 20 ? ` off ${r.overs} overs` : ''} at ${(r.target / r.overs).toFixed(2)} an over.`;
+    }
     if (s.inn === 2) {
       const bits = [`${n.chase} ${needLine(s)}`, dangerBatter(s)];
       if (s.wkts >= 6) bits.push(`only ${10 - s.wkts} wickets left`);
@@ -326,7 +373,8 @@
     L.before = { prevTension: L.prevTension, lastTenseIdx: L.lastTenseIdx, lastCollapseIdx: L.lastCollapseIdx };
     const I = st.innings[d.inn - 1];
     const recentWicket = d.wicket || (i > 0 && match.balls[i - 1].wicket && match.balls[i - 1].inn === d.inn);
-    const { wp, tension } = tensionOf(d.inn, d.total, d.wkts, d.legalBalls, match.target, recentWicket, levelOf(match));
+    const limits = limitsOf(match);
+    const { wp, tension } = tensionOf(d.inn, d.total, d.wkts, d.legalBalls, match.target, recentWicket, levelOf(match), limits, edgeOf(match));
     d.wp = wp; d.tension = tension;
     d.alerts = [];
     const s = snapshot(match, st);
@@ -368,17 +416,19 @@
       d.alerts.push({ kind: 'tense', title: tension >= 85 ? 'Get to a screen now' : 'Worth watching now', body: bits.filter(Boolean).join(', ') + '.' });
       L.lastTenseIdx = i;
     }
-    if (d.inn === 2 && overDone && d.legalBalls === BALLS - 6 && !s.matchOver && wp > 0.08 && wp < 0.92) {
+    if (d.inn === 2 && overDone && d.legalBalls === limits[1] - 6 && !s.matchOver && wp > 0.08 && wp < 0.92) {
       const last = lastOverBowler(s, P[d.bowler].name);
       d.alerts.push({ kind: 'lastover', title: `Last over: ${s.need} needed`, body: `${team} need ${s.need} off 6 with ${10 - s.wkts} wickets left.${last ? ` ${last.short} to bowl it.` : ''}` });
     }
-    if (d.inn === 1 && s.inningsOver) {
-      d.alerts.push({ kind: 'innings', title: `Innings break: ${s.names.chase} need ${match.target}`,
+    if (d.inn === 1 && s.inningsOver && !s.matchOver) {
+      const cut = s.revised && s.revised.overs !== 20 ? ` off ${s.revised.overs} overs` : '';
+      d.alerts.push({ kind: 'innings', title: `Innings break: ${s.names.chase} need ${match.target}${cut}`,
         body: `${s.names.first} finish on ${s.total}/${s.wkts}.${s.par ? ` Par here is about ${s.par}.` : ''} The chase starts in 20 minutes.` });
     }
     if (s.matchOver) {
       const [i1, i2] = match.innings;
-      d.alerts.push({ kind: 'result', title: match.result.text, body: `Final: ${s.names.first} ${i1.total}/${i1.wkts}, ${s.names.chase} ${i2.total}/${i2.wkts} (${oversLabel(i2.legal)}).` });
+      const chased = i2.startIdx != null ? `, ${s.names.chase} ${i2.total}/${i2.wkts} (${oversLabel(i2.legal)})` : ` (${oversLabel(i1.legal)})`;
+      d.alerts.push({ kind: 'result', title: match.result.text, body: `Final: ${s.names.first} ${i1.total}/${i1.wkts}${chased}.` });
     }
     for (const a of d.alerts) a.group = ALERT_GROUP[a.kind];
     L.prevTension = tension;
@@ -389,13 +439,14 @@
     const ids = Object.keys(info.teams);
     const first = info.batFirst || ids[0];
     const chase = ids.find((id) => id !== first);
+    const full = ballsOf((info && info.overs) || 20);
     const match = {
       info: Object.assign({ venue: '', par: null, start: 19 * 60 + 30, dateLabel: '', overs: 20, simulated: false }, info, { batFirst: first }),
       first, chase, players: {},
       balls: [],
       innings: [
-        { inn: 1, bat: first, bowl: chase, total: 0, wkts: 0, legal: 0, startIdx: null, endIdx: null },
-        { inn: 2, bat: chase, bowl: first, total: 0, wkts: 0, legal: 0, startIdx: null, endIdx: null },
+        { inn: 1, bat: first, bowl: chase, total: 0, wkts: 0, legal: 0, startIdx: null, endIdx: null, maxBalls: full },
+        { inn: 2, bat: chase, bowl: first, total: 0, wkts: 0, legal: 0, startIdx: null, endIdx: null, maxBalls: full },
       ],
       target: null, result: null,
     };
@@ -418,8 +469,10 @@
   function guessNext(d) {
     let s = d.striker;
     let ns = d.nonStriker;
-    if (d.wicket && d.wicket.out === s) s = null;
-    else if (d.wicket && d.wicket.out === ns) ns = null;
+    for (const w of [d.wicket].concat(d.alsoOut || [])) {
+      if (w && w.out === s) s = null;
+      else if (w && w.out === ns) ns = null;
+    }
     const ran = d.runs + (d.extra === 'b' || d.extra === 'lb' ? d.extras : d.extra === 'wd' ? d.extras - 1 : 0);
     if (ran % 2 === 1) [s, ns] = [ns, s];
     if (d.legal && d.legalBalls % 6 === 0) [s, ns] = [ns, s];
@@ -445,21 +498,37 @@
     const chase = T[match.chase].short;
     if (i2.total >= match.target) {
       const w = 10 - i2.wkts;
-      const b = BALLS - i2.legal;
+      const b = Math.max(0, i2.maxBalls - i2.legal);
       return { winner: match.chase, margin: `${w} wicket${w === 1 ? '' : 's'}`, ballsLeft: b,
         text: `${chase} win by ${w} wicket${w === 1 ? '' : 's'}${b ? ` with ${b} ball${b === 1 ? '' : 's'} left` : ' off the last ball'}` };
     }
-    if (i2.total === match.target - 1) return { winner: null, text: 'Match tied' };
-    const m = match.target - 1 - i2.total;
+    // Run margins are runs scored, except in a chase cut short by rain, where
+    // they are measured against the revised target.
+    const bar = i2.maxBalls < match.innings[0].maxBalls || i2.maxBalls < ballsOf(match.info.overs || 20) ? match.target - 1 : match.innings[0].total;
+    if (i2.total === bar) return { winner: null, text: 'Match tied' };
+    const m = bar - i2.total;
     return { winner: match.first, margin: `${m} run${m === 1 ? '' : 's'}`, text: `${first} win by ${m} run${m === 1 ? '' : 's'}` };
   }
 
-  function endInnings(match, opts) {
+  // `by` is 'engine' when the engine ended the innings itself (ten down, the
+  // last over, the target), which a later ball from the feed can undo.
+  function endInnings(match, opts, by) {
     const meta = match.innings[match.live.st.inn - 1];
     if (meta.endIdx != null) return;
     meta.endIdx = match.balls.length - 1;
-    if (meta.inn === 1) match.target = (opts && opts.target) || meta.total + 1;
-    else match.result = (opts && opts.result) || resultOf(match);
+    meta.endedBy = by || 'feed';
+    if (opts && opts.result) match.result = opts.result;
+    else if (meta.inn === 1) match.target = (opts && opts.target) || meta.total + 1;
+    else match.result = resultOf(match);
+  }
+
+  // Work out the newest ball's alerts again, after the feed changed what it
+  // means (the innings ended, a target was revised, a result came in).
+  function reannotate(match) {
+    if (!match.balls.length) return;
+    const L = match.live;
+    Object.assign(L, L.before);
+    annotateLast(match);
   }
 
   // The engine closes an innings by itself at ten wickets, the last over, or
@@ -467,18 +536,61 @@
   // innings, an abandoned match), optionally with { target } or { result }.
   function closeInnings(match, opts) {
     if (!match.balls.length) return;
-    const L = match.live;
     endInnings(match, opts);
-    Object.assign(L, L.before);
-    annotateLast(match);
+    reannotate(match);
+  }
+
+  // Rain: innings `inn` now has `overs` overs and, for the chase, a new
+  // target. Saying so for the chase also closes the first innings.
+  function revise(match, { inn, overs, target }) {
+    const meta = match.innings[(inn || match.live.st.inn) - 1];
+    if (meta.inn === 2 && match.innings[0].endIdx == null && match.balls.length) endInnings(match, { target });
+    if (overs != null) meta.maxBalls = ballsOf(overs);
+    if (target != null && meta.inn === 2) match.target = target;
+    // The innings-break ping on the last ball should carry the new target.
+    if (match.balls.length && match.balls[match.balls.length - 1].inn === 1 && match.innings[0].endIdx != null) reannotate(match);
+  }
+
+  // The match is over, as the feed says: closes whatever is still open and
+  // takes the feed's result if it has one (DLS, a super over, no result).
+  function endMatch(match, { result } = {}) {
+    const none = { winner: null, text: 'No result' };
+    if (!match.balls.length) { match.result = result || none; return; }
+    const meta = match.innings[match.live.st.inn - 1];
+    // A chase the feed ends without a result fell short (bowled out a batter
+    // down, say); a first innings that never finished is no result.
+    if (meta.endIdx == null) endInnings(match, result ? { result } : meta.inn === 1 ? { result: none } : null);
+    else if (result) match.result = result;
+    else if (!match.result) match.result = none; // stopped at the innings break
+    reannotate(match);
+  }
+
+  // One item from a feed: a ball, or a status message.
+  function push(match, item) {
+    if (item.status === 'limit') return revise(match, item);
+    if (item.status === 'end') return endMatch(match, item);
+    return addBall(match, item);
+  }
+
+  // An innings the engine closed by itself, now with one more ball: the
+  // umpires miscounted the last over, or the feed's score was behind and has
+  // since been corrected. The feed knows best, so carry on.
+  function reopen(match, meta) {
+    meta.endIdx = null;
+    meta.endedBy = null;
+    if (meta.inn === 1) match.target = null;
+    else match.result = null;
+    reannotate(match);
   }
 
   function addBall(match, raw) {
-    if (match.result) throw new Error('the match is already over');
     const L = match.live;
     const inn = raw.inn;
-    if (inn === 2 && match.innings[0].endIdx == null && match.balls.length) closeInnings(match);
     const meta = match.innings[inn - 1];
+    const last = match.balls[match.balls.length - 1];
+    if (meta.endedBy === 'engine' && last && last.inn === inn) reopen(match, meta);
+    if (match.result) throw new Error('the match is already over');
+    if (inn === 2 && match.innings[0].endIdx == null && match.balls.length) closeInnings(match);
     if (meta.endIdx != null) throw new Error(`innings ${inn} is already over`);
     const prev = match.balls[match.balls.length - 1] || null;
     const same = prev && prev.inn === inn ? prev : null;
@@ -500,10 +612,17 @@
       d.wicket = { kind: w.kind, out: w.out, bowler: w.bowler || raw.bowler, fielder: w.fielder || null };
       d.wicket.how = w.how || dismissal(P, d.wicket);
     }
-    d.total = (same ? same.total : 0) + d.runs + d.extras;
-    d.wkts = (same ? same.wkts : 0) + (d.wicket && d.wicket.kind !== 'retired' ? 1 : 0);
-    d.legalBalls = (same ? same.legalBalls : 0) + (d.legal ? 1 : 0);
-    const inOver = (same ? same.legalBalls : 0) - 6 * d.over + (d.legal ? 1 : 0);
+    if (raw.alsoOut && raw.alsoOut.length) {
+      d.alsoOut = raw.alsoOut.map((w) => ({ kind: w.kind, out: w.out, how: w.how || w.kind }));
+      for (const w of d.alsoOut) if (!P[w.out]) addPlayer(match, meta.bat, { id: w.out });
+    }
+    if (raw.penalty) d.penalty = raw.penalty;
+    d.total = (same ? same.total : 0) + d.runs + d.extras + (d.penalty || 0);
+    d.wkts = (same ? same.wkts : 0) + [d.wicket].concat(d.alsoOut || []).filter((w) => w && w.kind !== 'retired').length;
+    // Balls are counted the way the scoreboard counts them, from the over
+    // number: a seventh ball in a miscounted over is 19.7, not over 20.
+    const inOver = (same && same.over === d.over ? same.legalBalls - 6 * d.over : 0) + (d.legal ? 1 : 0);
+    d.legalBalls = 6 * d.over + Math.min(6, inOver);
     d.label = raw.label || `${d.over}.${d.legal ? inOver : inOver + 1}`;
     d.t = raw.t != null ? raw.t : (prev ? prev.t : 0) + (d.legal ? 0.6 : 0.3) + (d.wicket ? 1 : 0);
     d.text = raw.text || plainText(P, d);
@@ -517,7 +636,7 @@
     if (meta.startIdx == null) meta.startIdx = match.balls.length - 1;
     applyBall(L.st, d);
     meta.total = d.total; meta.wkts = d.wkts; meta.legal = d.legalBalls;
-    if (d.wkts >= 10 || d.legalBalls >= BALLS || (inn === 2 && d.total >= match.target)) endInnings(match);
+    if (d.wkts >= 10 || d.legalBalls >= meta.maxBalls || (inn === 2 && d.total >= match.target)) endInnings(match, null, 'engine');
     annotateLast(match);
     return d;
   }
@@ -554,7 +673,7 @@
         seg = { inn: d.inn, team: side(d.inn), fromScore: prev ? `${prev.total}/${prev.wkts}` : '0/0', fromOvers: prev ? oversLabel(prev.legalBalls) : '0.0', runs: 0, wkts: 0, balls: 0, fours: 0, sixes: 0 };
         segments.push(seg);
       }
-      seg.runs += d.runs + d.extras;
+      seg.runs += d.runs + d.extras + (d.penalty || 0);
       if (d.legal) seg.balls++;
       if (d.wicket) seg.wkts++;
       if (d.runs === 4) seg.fours++;
@@ -917,7 +1036,7 @@
 
   return {
     SEED,
-    createMatch, addBall, addPlayer, closeInnings,
+    createMatch, push, addBall, addPlayer, closeInnings, revise, endMatch,
     simulateFeed, simulateMatch,
     stateAt, windowFacts, localCatchUp, localAnswer, tensionReason,
     chaseWinChance, tensionLabel, verdictFor, oversLabel, clockLabel, symbol, TENSE,
