@@ -120,3 +120,4 @@ if (E.createMatch) {
   diff(golden.states[cut], JSON.parse(JSON.stringify(sp)), 'partial.state', p4);
   report(`match in progress (${cut + 1} balls in) matches the full match at that ball`, p4);
 }
+
